@@ -38,7 +38,7 @@
             run: |
               platformio run -e ${{ matrix.board.env }}
 
-              esptool.py --chip esp32s3 merge_bin -o IceNav_${{ matrix.board.env }}.bin \
+              esptool.py --chip esp32s3 merge-bin -o IceNav_${{ matrix.board.env }}.bin \
               ${{ matrix.board.addr }} ./pio
               /build/${{ matrix.board.env }}/bootloader.bin \
               0x8000 ./pio/build/${{ matrix.board.env }}/partitions.bin \
