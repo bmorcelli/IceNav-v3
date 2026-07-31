@@ -2,8 +2,8 @@
  * @file nav_reader.cpp
  * @author Jordi Gauchía (jgauchia@jgauchia.com)
  * @brief  Binary NAV file reader and tile container manager
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
 #include "nav_reader.hpp"
@@ -15,14 +15,23 @@
 extern Storage storage;
 static const char* TAG = "NavReader";
 
-FILE* NavReader::packFile = nullptr;
-uint8_t NavReader::currentZoom = 0;
-uint32_t NavReader::tileCount = 0;
-uint32_t NavReader::indexOff = 0;
+FILE*    NavReader::packFile    = nullptr;
+uint8_t  NavReader::currentZoom = 0;
+uint32_t NavReader::tilesWide   = 0;
+uint32_t NavReader::tilesHigh   = 0;
+uint32_t NavReader::minX        = 0;
+uint32_t NavReader::minY        = 0;
+
+NavReader::IndexEntry* NavReader::bandBuffer   = nullptr;
+uint32_t               NavReader::bandStartRow = 0;
+uint32_t               NavReader::bandRows     = 0;
+
+uint16_t* NavReader::colorPalette = nullptr;
+uint16_t  NavReader::paletteCount = 0;
 
 /**
  * @brief Open a packed tile container for the given zoom level.
- *s
+ *
  * @param zoom Zoom level.
  * @return True if successful.
  */
@@ -55,18 +64,42 @@ bool NavReader::openPack(uint8_t zoom)
         return false;
     }
 
-    // NPK2 Header: 
-    // tile_count(4), index_off(4), reserved[4](16) = 24 bytes
-    uint32_t headerData[2]; // count, indexOff
-    if (storage.read(packFile, (uint8_t*)headerData, 8) != 8)
+    uint32_t hdrRest[4];
+    if (storage.read(packFile, (uint8_t*)hdrRest, 16) != 16)
     {
         ESP_LOGE(TAG, "Failed to read NPK2 header for %s", path);
         closePack();
         return false;
     }
 
-    tileCount = headerData[0];
-    indexOff = headerData[1];
+    uint16_t colorCount;
+    if (storage.read(packFile, (uint8_t*)&colorCount, 2) != 2)
+    {
+        ESP_LOGE(TAG, "Failed to read palette size for %s", path);
+        closePack();
+        return false;
+    }
+
+    tilesWide   = hdrRest[0];
+    tilesHigh   = hdrRest[1];
+    minX        = hdrRest[2];
+    minY        = hdrRest[3];
+
+    if (colorCount > 0)
+    {
+        uint32_t paletteOff = NAV_PACK_HDR_SIZE + (uint32_t)tilesWide * tilesHigh * sizeof(IndexEntry);
+        colorPalette = static_cast<uint16_t*>(heap_caps_malloc(colorCount * sizeof(uint16_t), MALLOC_CAP_SPIRAM));
+        if (!colorPalette)
+            colorPalette = static_cast<uint16_t*>(heap_caps_malloc(colorCount * sizeof(uint16_t), MALLOC_CAP_INTERNAL));
+        if (!colorPalette || storage.seekAndRead(packFile, paletteOff, (uint8_t*)colorPalette, colorCount * sizeof(uint16_t)) != colorCount * sizeof(uint16_t))
+        {
+            ESP_LOGE(TAG, "Failed to load color palette for %s", path);
+            closePack();
+            return false;
+        }
+        paletteCount = colorCount;
+    }
+
     currentZoom = zoom;
 
     return true;
@@ -83,49 +116,128 @@ void NavReader::closePack()
         packFile = nullptr;
     }
 
+    freeBand();
+
+    if (colorPalette)
+    {
+        heap_caps_free(colorPalette);
+        colorPalette = nullptr;
+    }
+    paletteCount = 0;
+
     currentZoom = 0;
-    tileCount = 0;
-    indexOff = 0;
+    tilesWide   = 0;
+    tilesHigh   = 0;
+    minX        = 0;
+    minY        = 0;
 }
 
 /**
- * @brief Search for a tile in the open pack using global Hilbert binary search.
- * @param tileX Tile X coordinate.
- * @param tileY Tile Y coordinate.
- * @param offset Output offset.
- * @param size Output size.
- * @return True if found.
+ * @brief Release the PSRAM index band buffer.
+ */
+void NavReader::freeBand()
+{
+    if (bandBuffer)
+    {
+        heap_caps_free(bandBuffer);
+        bandBuffer = nullptr;
+    }
+
+    bandStartRow = 0;
+    bandRows     = 0;
+}
+
+/**
+ * @brief Load a horizontal band of index rows into PSRAM, centered on yOff.
+ *
+ * @param yOff Row offset (tileY - minY) to be covered by the band.
+ * @return True if the band buffer covers yOff after the call.
+ */
+bool NavReader::loadBand(uint32_t yOff)
+{
+    uint32_t rowBytes = tilesWide * sizeof(IndexEntry);
+    if (rowBytes == 0)
+        return false;
+
+    uint32_t maxRows = NAV_INDEX_BAND_BYTES / rowBytes;
+    if (maxRows == 0)
+        maxRows = 1;
+    if (maxRows > tilesHigh)
+        maxRows = tilesHigh;
+
+    if (!bandBuffer)
+    {
+        bandBuffer = static_cast<IndexEntry*>(heap_caps_malloc(maxRows * rowBytes, MALLOC_CAP_SPIRAM));
+        if (!bandBuffer)
+            return false;
+    }
+
+    uint32_t startRow;
+    if (yOff < maxRows / 2)
+        startRow = 0;
+    else
+        startRow = yOff - maxRows / 2;
+
+    if (startRow + maxRows > tilesHigh)
+        startRow = tilesHigh - maxRows;
+
+    uint32_t entryPos = NAV_PACK_HDR_SIZE + startRow * tilesWide * sizeof(IndexEntry);
+    if (storage.seekAndRead(packFile, entryPos, (uint8_t*)bandBuffer, maxRows * rowBytes) != maxRows * rowBytes)
+    {
+        freeBand();
+        return false;
+    }
+
+    bandStartRow = startRow;
+    bandRows     = maxRows;
+    return true;
+}
+
+/**
+ * @brief Find a tile in the open pack using O(1) flat 2D index lookup.
+ *
+ * @param tileX  Absolute tile X coordinate.
+ * @param tileY  Absolute tile Y coordinate.
+ * @param offset Output: byte offset of tile data in the file.
+ * @param size   Output: byte size of tile data.
+ * @return True if tile exists and is non-empty.
  */
 bool NavReader::findTileInPack(uint32_t tileX, uint32_t tileY, uint32_t& offset, uint32_t& size)
 {
-    if (!packFile || tileCount == 0)
+    if (!packFile || tilesWide == 0 || tilesHigh == 0)
         return false;
 
-    uint64_t targetH = xyToHilbert(tileX, tileY, currentZoom);
-    int32_t low = 0;
-    int32_t high = (int32_t)tileCount - 1;
+    if (tileX < minX || tileY < minY)
+        return false;
 
-    while (low <= high)
+    uint32_t xOff = tileX - minX;
+    uint32_t yOff = tileY - minY;
+
+    if (xOff >= tilesWide || yOff >= tilesHigh)
+        return false;
+
+    bool inBand = bandBuffer && yOff >= bandStartRow && yOff < bandStartRow + bandRows;
+    if (!inBand)
+        inBand = loadBand(yOff) && yOff >= bandStartRow && yOff < bandStartRow + bandRows;
+
+    IndexEntry entry;
+    if (inBand)
     {
-        int32_t mid = low + (high - low) / 2;
-        storage.seek(packFile, indexOff + (mid * 16), SEEK_SET);
-
-        uint64_t entryH;
-        if (storage.read(packFile, (uint8_t*)&entryH, 8) != 8)
+        entry = bandBuffer[(yOff - bandStartRow) * tilesWide + xOff];
+    }
+    else
+    {
+        uint32_t entryPos = NAV_PACK_HDR_SIZE + (yOff * tilesWide + xOff) * sizeof(IndexEntry);
+        if (storage.seek(packFile, entryPos, SEEK_SET) != 0)
             return false;
-
-        if (entryH < targetH)
-            low = mid + 1;
-        else if (entryH > targetH)
-            high = mid - 1;
-        else
-        {
-            if (storage.read(packFile, (uint8_t*)&offset, 4) != 4 || storage.read(packFile, (uint8_t*)&size, 4) != 4)
-                return false;
-
-            return true;
-        }
+        if (storage.read(packFile, (uint8_t*)&entry, sizeof(IndexEntry)) != sizeof(IndexEntry))
+            return false;
     }
 
-    return false;
+    if (entry.size == 0)
+        return false;
+
+    offset = entry.offset;
+    size   = entry.size;
+    return true;
 }

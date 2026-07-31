@@ -2,39 +2,20 @@
  * @file main.cpp
  * @author Jordi Gauchía (jgauchia@jgauchia.com)
  * @brief  ICENAV - ESP32 GPS Navigator main code
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
 #include <Arduino.h>
-#include "i2c_espidf.hpp"
 #include <WiFi.h>
 #include <esp_log.h>
+#include <atomic>
 #include <ESPmDNS.h>
-#include <SolarCalculator.h>
-
-int taskSleepPeriod = 10;
 
 #include "hal.hpp"
 #include "gps.hpp"
 #include "storage.hpp"
 #include "tft.hpp"
-
-#ifdef HMC5883L
-    #include "compass.hpp"
-#endif
-#ifdef QMC5883
-    #include "compass.hpp"
-#endif
-#ifdef IMU_MPU9250
-    #include "compass.hpp"
-#endif
-#ifdef BME280
-    #include "bme.hpp"
-#endif
-#ifdef MPU6050
-    #include "imu.hpp"
-#endif
 
 extern xSemaphoreHandle gpsMutex;
 #include "webpage.h"
@@ -42,95 +23,46 @@ extern xSemaphoreHandle gpsMutex;
 #include "battery.hpp"
 #include "power.hpp"
 #include "gpxParser.hpp"
+#include "climbAnalyzer.hpp"
 #include "maps.hpp"
+#include "lv_subjects.hpp"
+#include "router.hpp"
 
 extern Storage storage;
 extern Battery battery;
 extern Power power;
 extern Maps mapView;
-#ifdef ENABLE_COMPASS
-    Compass compass;
-#endif
 
 TrackVector trackData;
 std::vector<TrackSegment> trackIndex;
 std::vector<TurnPoint> turnPoints;
+ClimbAnalyzer climbAnalyzer;
+
+float                  routeDstLat       = 0.0f;
+float                  routeDstLon       = 0.0f;
+std::atomic<bool>      rerouteRequested  {false};
+SemaphoreHandle_t      routeMutex        = nullptr;
 
 #include "navigation.hpp"
 NavState navState;
-static double transit, sunrise, sunset;
-
 #include "timezone.c"
-#include "settings.hpp" 
+#include "settings.hpp"
 #include "lvglSetup.hpp"
 #include "tasks.hpp"
-
-/**
- * @brief Calculate Sunrise and Sunset based on current GPS position and date.
- */
-void calculateSun()
-{
-    calcSunriseSunset(2000 + fix.dateTime.year, 
-                        fix.dateTime.month, 
-                        fix.dateTime.date,
-                        gps.gpsData.latitude, 
-                        gps.gpsData.longitude,
-                        transit, 
-                        sunrise, 
-                        sunset);
-    int hours = (int)sunrise + gps.gpsData.UTC;
-    int minutes = (int)round(((sunrise + gps.gpsData.UTC) - hours) * 60);
-    snprintf(gps.gpsData.sunriseHour, 6, "%02d:%02d", hours, minutes);         
-    hours = (int)sunset +  gps.gpsData.UTC;
-    minutes = (int)round(((sunset +  gps.gpsData.UTC) - hours) * 60);
-    snprintf(gps.gpsData.sunsetHour, 6, "%02d:%02d", hours, minutes); 
-    log_i("Sunrise: %s",gps.gpsData.sunriseHour);
-    log_i("Sunset: %s",gps.gpsData.sunsetHour);               
-}
 
 /**
  * @brief Initialize the ESP32 GPS Navigator system
  */
 void setup()
 {
-    gpsMutex = xSemaphoreCreateMutex();
+    gpsMutex     = xSemaphoreCreateMutex();
+    routeMutex   = xSemaphoreCreateMutex();
+    sensorMutex  = xSemaphoreCreateMutex();
     lutInit = initTrigLUT();
-    #ifdef POWER_SAVE
-        pinMode(BOARD_BOOT_PIN, INPUT_PULLUP);
-        #ifdef ICENAV_BOARD
-            gpio_hold_dis(GPIO_NUM_46);
-            gpio_hold_dis((gpio_num_t)BOARD_BOOT_PIN);
-            gpio_deep_sleep_hold_dis();
-        #endif
-    #endif
-    #ifdef TDECK_ESP32S3
-        pinMode(BOARD_POWERON, OUTPUT);
-        digitalWrite(BOARD_POWERON, HIGH);
-        pinMode(GPIO_NUM_16, INPUT);
-        pinMode(SD_CS, OUTPUT);
-        pinMode(RADIO_CS_PIN, OUTPUT);
-        pinMode(TFT_SPI_CS, OUTPUT);
-        digitalWrite(SD_CS, HIGH);
-        digitalWrite(RADIO_CS_PIN, HIGH);
-        digitalWrite(TFT_SPI_CS, HIGH);
-        pinMode(SPI_MISO, INPUT_PULLUP);
-    #endif
-    i2c.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-    #ifdef BME280
-        initBME();
-    #endif
-    #ifdef ENABLE_COMPASS
-        compass.init();
-    #endif
-    #ifdef ENABLE_IMU
-        initIMU();
-    #endif
+    initHAL();
     storage.initSD();
     storage.initSPIFFS();
     battery.initADC();
-    #ifdef ENABLE_COMPASS
-        vTaskDelay(pdMS_TO_TICKS(50));
-    #endif
     initTFT();
     createGpxFolders();
     mapView.initMap(tft.height() - 27, tft.width());
@@ -142,6 +74,7 @@ void setup()
     initGpsTask();
     initSensorTask();
     initGuiTask();
+    initNavTask();
     #ifndef DISABLE_CLI
         initCLI();
         initCLITask();
@@ -154,6 +87,7 @@ void setup()
     }
     if (WiFi.status() == WL_CONNECTED && enableWeb)
         configureWebServer();
+    vTaskSuspend(guiTaskHandle);
     splashScreen();
     if (isGpsFixed)
     {
@@ -165,6 +99,7 @@ void setup()
         lv_timer_resume(searchTimer);
         lv_screen_load(searchSatScreen);
     }
+    vTaskResume(guiTaskHandle);
 }
 
 /**
@@ -174,28 +109,6 @@ void loop()
 {
     if (enableWeb)
         processWebServerTasks();
-
-    if (isTrackLoaded)
-    {
-        if (navSet.simNavigation)
-            gps.simFakeGPS(trackData, 120, 1000);
-
-        if (gps.gpsData.speed != 0)
-        {
-            NavConfig simConfig;
-            simConfig.searchWindow = 150;
-            simConfig.offTrackThreshold = 75.0f;
-            simConfig.maxBackwardJump = 10;
-            static unsigned long lastNavUpdate = 0;
-
-            if (millis() - lastNavUpdate > 100)
-            {
-                lastNavUpdate = millis();
-                updateNavigation(gps.gpsData.latitude, gps.gpsData.longitude, gps.gpsData.heading, gps.gpsData.speed,
-                                trackData, turnPoints, navState, 20, 200, simConfig);
-            }
-        }
-    }
 
     vTaskDelay(pdMS_TO_TICKS(10));
 }

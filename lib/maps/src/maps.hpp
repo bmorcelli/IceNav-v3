@@ -2,8 +2,8 @@
  * @file maps.hpp
  * @author Jordi Gauchía (jgauchia@jgauchia.com) - Render Maps
  * @brief  Maps draw class
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
 #pragma once
@@ -70,9 +70,9 @@ private:
     uint16_t wptPosY;
     TFT_eSprite mapTempSprite = TFT_eSprite(&tft);
     TFT_eSprite mapSprite = TFT_eSprite(&tft);
-    TFT_eSprite preloadSprite = TFT_eSprite(&tft);
-    float destLat;
-    float destLon;
+    float destLat = 0.0f;
+    float destLon = 0.0f;
+    bool hasWaypoint = false;
     uint8_t zoomLevel;
     ScreenCoord navArrowPosition;
 
@@ -86,11 +86,23 @@ private:
     tileBounds getTileBounds(uint32_t tileX, uint32_t tileY, uint8_t zoom);
     bool isCoordInBounds(float lat, float lon, tileBounds bound);
     ScreenCoord coord2ScreenPos(float lon, float lat, uint8_t zoomLevel, uint16_t tileSize);
-    void coords2map(float lat, float lon, tileBounds bound, uint16_t *pixelX, uint16_t *pixelY);
+    void coords2map(float lat, float lon, const tileBounds& bound, uint16_t *pixelX, uint16_t *pixelY);
     void showNoMap(TFT_eSprite &map);
     void panMap(int8_t dx, int8_t dy);
     uint16_t darkenRGB565(const uint16_t color, const float amount = 0.4f);
     void fillPolygonGeneral(TFT_eSprite &map, const int *px, const int *py, const int numPoints, const uint16_t color, const int xOffset, const int yOffset, uint16_t ringCount = 1, const uint16_t* ringEnds = nullptr);
+
+    float _mapTilt;
+    float _focalLength;
+    bool _scrolling = false;
+    bool _use3DCache = false;
+
+    bool isNavActive() const;
+    void update3DCache();
+    void apply3DPerspective(uint16_t heading);
+    void preloadTiles(int8_t dirX, int8_t dirY);
+    bool renderNavViewport(float centerLat, float centerLon, uint8_t zoom, TFT_eSprite &map);
+    void renderNavTile(uint32_t tileX, uint32_t tileY, uint8_t zoom, int16_t screenX, int16_t screenY, TFT_eSprite &map);
 
 public:
 #ifdef T4_S3
@@ -106,18 +118,25 @@ public:
     void* mapBuffer;
     uint16_t mapScrHeight;
     uint16_t mapScrWidth;
-    bool redrawMap = true;
+    volatile bool redrawMap = true;
     bool followGps = true;
     bool isMapFound = false;
     MapTile oldMapTile;
     MapTile currentMapTile;
-    MapTile roundMapTile;
     int16_t tileX = 0;
     int16_t tileY = 0;
     int16_t lastTileX = 0;
-    int16_t lastTileY = 0;
+    int16_t lastTileY;
+    uint16_t lastRenderedHeading;
+    ScreenCoord lastRenderedArrowPos;
+    int16_t lastRenderedDisplayOffsetX;
+    int16_t lastRenderedDisplayOffsetY;
     int16_t offsetX = 0;
     int16_t offsetY = 0;
+    int16_t displayOffsetX = 0;
+    int16_t displayOffsetY = 0;
+    int16_t pendingDx = 0;
+    int16_t pendingDy = 0;
     float velocityX = 0.0f;
     float velocityY = 0.0f;
     const float friction = 0.95f;
@@ -139,10 +158,7 @@ public:
     void updateMap();
     void centerOnGps(float lat, float lon);
     void scrollMap(int16_t dx, int16_t dy);
-    void preloadTiles(int8_t dirX, int8_t dirY);
     void resetScrollState();
-    bool renderNavViewport(float centerLat, float centerLon, uint8_t zoom, TFT_eSprite &map);
-    void renderNavTile(uint32_t tileX, uint32_t tileY, uint8_t zoom, int16_t screenX, int16_t screenY, TFT_eSprite &map);
 
 private:
     struct FeatureRef
@@ -178,27 +194,28 @@ private:
 
     static const uint16_t MAX_POLYGON_POINTS = 1024;
     static const uint32_t MAX_FEATURE_POOL_SIZE = 16384;
+    static const uint16_t MAX_PLACED_LABELS = 512;
 
     std::vector<int, PsramAllocator<int>> projBuf32X;
     std::vector<int, PsramAllocator<int>> projBuf32Y;
     std::vector<int16_t, PsramAllocator<int16_t>> decodedCoords;
     std::vector<FeatureRef, PsramAllocator<FeatureRef>> featurePool;
     std::vector<uint16_t, PsramAllocator<uint16_t>> layers[16];
+    std::vector<uint16_t, PsramAllocator<uint16_t>> layersCasing[16];
     std::vector<uint16_t, PsramAllocator<uint16_t>> ringEndsCache;
     std::vector<LabelRect, PsramAllocator<LabelRect>> placedLabelsCache;
 
-    void renderNavFeature(const FeatureRef& ref, TFT_eSprite& map, uint8_t pass, std::vector<LabelRect, PsramAllocator<LabelRect>>& placedLabels);
     void renderNavLineString(const FeatureRef& ref, TFT_eSprite& map, bool isCasing = false);
     void renderNavPolygon(const FeatureRef& ref, TFT_eSprite& map);
     void renderNavPoint(const FeatureRef& ref, TFT_eSprite& map);
     void renderNavText(const FeatureRef& ref, TFT_eSprite& map, std::vector<LabelRect, PsramAllocator<LabelRect>>& placedLabels);
     void latLonToPixel(float lat, float lon, int16_t& px, int16_t& py);
-    void drawTrack(TFT_eSprite &map);
+    void drawTrack(TFT_eSprite& map);
 
 public:
-    bool trackNeedsRedraw = false;
     void redrawTrack();
-    bool isRendering() const { return !pendingTiles.empty(); }
+    bool isRendering() const { return pendingTilesNotEmpty_; }
+    bool is3DActive() const { return _use3DCache; }
 
 private:
     enum TileType
@@ -221,16 +238,20 @@ private:
     TaskHandle_t mapRenderTaskHandle;
     static void mapRenderTask(void* pvParameters);
     void renderPngTile(uint32_t tileX, uint32_t tileY, uint8_t zoom, int16_t screenX, int16_t screenY, TFT_eSprite &map);
+    bool loadPngTileIntoSprite(int32_t tlX, int32_t tlY, int gx, int gy,
+                               uint32_t centerTileIdxX, uint32_t centerTileIdxY,
+                               uint8_t zoom, bool& centerFound);
+    void enqueueTileGrid(uint32_t centerTileIdxX, uint32_t centerTileIdxY, TileType type);
+    uint8_t* navCacheLookupOrLoad(uint32_t tileX, uint32_t tileY, uint8_t zoom, size_t& outDataSize);
+    void navDecodeFeatures(const uint8_t* data, size_t dataSize, int16_t screenX, int16_t screenY, uint8_t zoom);
+    static void drawThickLine(TFT_eSprite& map, int16_t x0, int16_t y0,
+                              int16_t x1, int16_t y1, uint8_t width, uint16_t color);
 
     uint8_t navLastZoom_;
     bool navNeedsRender_;
     float navTlTileX_;
     float navTlTileY_;
-    float renderLat_;
-    float renderLon_;
-
-    uint16_t cacheHits;
-    uint16_t cacheMisses;
+    volatile bool pendingTilesNotEmpty_ = false;
 
     struct Edge
     {

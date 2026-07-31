@@ -2,8 +2,8 @@
  * @file battery.cpp
  * @author Jordi Gauchía (jgauchia@jgauchia.com)
  * @brief  Battery monitor definition and functions
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
 #include "battery.hpp"
@@ -14,10 +14,8 @@ Battery battery;
 /**
  * @brief Constructs a Battery monitoring object for voltage measurement and percentage calculation.
  */
-Battery::Battery()
+Battery::Battery() : batteryMax(0.0f), batteryMin(0.0f)
 {
-    batteryMax = 0.0f;
-    batteryMin = 0.0f;
 }
 
 /**
@@ -85,6 +83,7 @@ float Battery::readBattery()
     voltage = (voltage * V_REF) / 4096.0f;
     voltage = voltage * ((R1 + R2) / R2);
     voltage = roundf(voltage * 100.0f) / 100.0f;
+    lastVolt = voltage;
     output = ((voltage - batteryMin) / (batteryMax - batteryMin)) * 100.0f;
 
     return (output <= 500) ? output : 0.0f;

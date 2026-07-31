@@ -2,8 +2,8 @@
  * @file settings.hpp
  * @author Jordi Gauchía (jgauchia@jgauchia.com)
  * @brief  Settings functions
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
 #pragma once
@@ -56,6 +56,7 @@ extern uint16_t sunPosY;        /**< Sunrise/Sunset widget position Y */
 extern bool enableWeb;          /**< Enable or disable web file server */
 extern int8_t tempOffset;       /**< BME temperature sensor offset */
 extern bool calculateDST;       /**< Daylight Saving Time calculation flag */
+extern bool nmeaDebugTileEnabled; /**< Show the NMEA debug tile */
 
 /**
  * @brief Structure for map settings
@@ -71,6 +72,8 @@ struct MAP
     bool showMapSpeed;      /**< Show speed in map screen */
     bool vectorMap;         /**< Map type: true for vector, false for rendered */
     bool showMapScale;      /**< Show map scale on screen */
+    bool showClimb;         /**< Show Climb analyzer */
+    bool map3D;             /**< Enable pseudo-3D perspective view */
 };
 extern MAP mapSet; /**< Global instance for map settings */
 
@@ -79,9 +82,10 @@ extern MAP mapSet; /**< Global instance for map settings */
  *
  * @details Contains navigation configuration 
  */
-struct NAVIGATION 
+struct NAVIGATION
 {
     bool simNavigation;     /**< Indicates whether navigation simulation mode is enabled or disabled. */
+    uint16_t routeSpeed;    /**< Max speed (km/h) for A* heuristic: 130=car, 25=bike, 5=walk. Selects ROUTE/CAR|BIKE|WALK/ROUTE.bin on SD card. */
 };
 extern NAVIGATION navSet; /**< Global instance for navigation settings */
 

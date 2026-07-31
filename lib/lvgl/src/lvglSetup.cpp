@@ -2,16 +2,20 @@
  * @file lvglSetup.cpp
  * @author Jordi Gauchía (jgauchia@jgauchia.com)
  * @brief  LVGL Screen implementation
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
+#include "../../gui/src/lv_subjects.hpp"
 #include "lvglSetup.hpp"
+#include "../../../include/hal.hpp"
 #include "i2c_espidf.hpp"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+
+SemaphoreHandle_t lvgl_mutex = NULL;
 
 /**
  * @brief Get system uptime in milliseconds using ESP-IDF timer.
@@ -24,7 +28,6 @@ lv_display_t *display; /**< LVGL display driver */
 
 lv_obj_t *searchSatScreen; /**< Search Satellite Screen object. */
 lv_obj_t *splashScr;       /**< Splash Screen object. */
-lv_timer_t *mainTimer;     /**< Main Screen Timer */
 lv_style_t styleThemeBkg;  /**< Main background style object. */
 lv_style_t styleObjectBkg; /**< Object background style. */
 lv_style_t styleObjectSel; /**< Object selected style. */
@@ -102,14 +105,22 @@ void IRAM_ATTR touchRead(lv_indev_t *indev_driver, lv_indev_data_t *data)
     const int DRAG_THRESHOLD = 30; // Increased threshold to 30px
 
     int count = 0;
+    static lv_indev_state_t lastTouchState = LV_INDEV_STATE_RELEASED;
+    static lv_point_t lastTouchPoint = {0, 0};
 
     #ifdef ICENAV_BOARD
-        // Protect I2C bus access for FT5x06 on shared bus
-        // Try lock without waiting. If bus busy, skip this touch frame.
-        if (i2c.lock(0)) 
+        // Protect I2C bus access for FT5x06 on shared bus.
+        // If bus is busy, hold the last reported state to avoid glitching the long-press timer.
+        if (i2c.lock(0))
         {
             count = tft.getTouch(touchRaw, TOUCH_MAX_POINTS);
             i2c.unlock();
+        }
+        else
+        {
+            data->state = lastTouchState;
+            data->point = lastTouchPoint;
+            return;
         }
     #else
         count = tft.getTouch(touchRaw, TOUCH_MAX_POINTS);
@@ -121,7 +132,8 @@ void IRAM_ATTR touchRead(lv_indev_t *indev_driver, lv_indev_data_t *data)
     if (count == 0)
     {
         data->state = LV_INDEV_STATE_RELEASED;
-        startX = -1; 
+        lastTouchState = LV_INDEV_STATE_RELEASED;
+        startX = -1;
 
         if (pinchActive && lastZoomDir != 0)
         {
@@ -138,23 +150,33 @@ void IRAM_ATTR touchRead(lv_indev_t *indev_driver, lv_indev_data_t *data)
         if (countTouchReleases)
         {
             countTouchReleases = false;
-            
+
             if (!isDrag)
             {
                 uint32_t touchReleaseTime = millis_idf();
                 if (!firstTouchReleaseTime)
+                {
                     firstTouchReleaseTime = touchReleaseTime;
-                numberTouchReleases++;
+                    lastTouchReleaseTime = touchReleaseTime;
+                    numberTouchReleases++;
+                }
+                else if (touchReleaseTime - lastTouchReleaseTime >= TOUCH_DOUBLE_TAP_MIN_INTERVAL
+                         && numberTouchReleases < 2)
+                {
+                    lastTouchReleaseTime = touchReleaseTime;
+                    numberTouchReleases++;
+                }
             }
             else
             {
                 numberTouchReleases = 0;
                 firstTouchReleaseTime = 0;
+                lastTouchReleaseTime = 0;
             }
             isDrag = false;
         }
 
-        if (millis_idf() - firstTouchReleaseTime > TOUCH_DOUBLE_TOUCH_INTERVAL)
+        if (firstTouchReleaseTime && millis_idf() - firstTouchReleaseTime > TOUCH_DOUBLE_TOUCH_INTERVAL)
         {
             if (numberTouchReleases == 2)
             {
@@ -164,7 +186,8 @@ void IRAM_ATTR touchRead(lv_indev_t *indev_driver, lv_indev_data_t *data)
 
             numberTouchReleases = 0;
             firstTouchReleaseTime = 0;
-        }  
+            lastTouchReleaseTime = 0;
+        }
     }
     else
     {
@@ -199,6 +222,8 @@ void IRAM_ATTR touchRead(lv_indev_t *indev_driver, lv_indev_data_t *data)
             lastZoomDir = ZOOM_NONE;
             lastTime = now;
             data->state = LV_INDEV_STATE_PRESSED;
+            lastTouchState = LV_INDEV_STATE_PRESSED;
+            lastTouchPoint = data->point;
         }
         else if (count == 2)
         {
@@ -258,7 +283,6 @@ void IRAM_ATTR keypadRead(lv_indev_t *indev_driver, lv_indev_data_t *data)
 
 #ifdef POWER_SAVE
 
-extern const uint8_t BOARD_BOOT_PIN; /**< GPIO pin number used for board boot functionality. */
 
 /**
  * @brief Reads GPIO button state for LVGL input device.
@@ -399,7 +423,9 @@ void lv_tick_task(void *arg)
  */
 void initLVGL()
 {
+    lvgl_mutex = xSemaphoreCreateMutex();
     lv_init();
+    init_lv_subjects();
     initSharedStyles();
 
     display = lv_display_create(TFT_WIDTH, TFT_HEIGHT);
@@ -469,13 +495,8 @@ void initLVGL()
         lv_indev_add_event_cb(indev_gpio, gpioLongEvent, LV_EVENT_LONG_PRESSED, NULL);
         lv_indev_add_event_cb(indev_gpio, gpioClickEvent, LV_EVENT_SHORT_CLICKED, NULL);
     #endif
-    
-    //  Create Main Timer
-    mainTimer = lv_timer_create(updateMainScreen, UPDATE_MAINSCR_PERIOD, NULL);
-    lv_timer_ready(mainTimer);
 
-    modifyTheme();
-    
+    modifyTheme();    
     //  Create Screens
     #ifdef ICENAV_BOARD
         createLVGLSplashScreen();
@@ -484,9 +505,12 @@ void initLVGL()
     createMainScr();
     createNotifyBar();
     createSettingsScr();
+    #if defined(BATT_PIN) || defined(BME280) || defined(ENABLE_IMU) || defined(ENABLE_COMPASS)
+    createSensorScr();
+    #endif
     createMapSettingsScr();
     createDeviceSettingsScr();
-    createButtonBarScr();
+    createOptionsPanel();
     createGpxDetailScreen();
     createGpxListScreen();
 
@@ -507,14 +531,18 @@ void loadMainScreen()
     isSearchingSat = false;
     gpxAction = WPT_NONE;
     lv_obj_clear_flag(menuBtn,LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(buttonBar, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(optionsScrim, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_y(optionsPanel, TFT_HEIGHT);
     if (mapView.isMapFound)
         lv_obj_clear_flag(navArrow, LV_OBJ_FLAG_HIDDEN);
     else
         lv_obj_add_flag(navArrow, LV_OBJ_FLAG_HIDDEN);
-    
-    if (mainTimer)
-        lv_timer_resume(mainTimer);
 
     lv_screen_load(mainScreen);
+
+    /* Force notification to all observers even if values have not changed.
+       lv_subject_set_int suppresses callbacks when the value is identical;
+       widgets need to re-render their initial state after a screen transition. */
+    notify_all_subjects();
+    triggerMapRedraw();
 }

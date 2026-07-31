@@ -2,15 +2,17 @@
  * @file settingsScr.cpp
  * @author Jordi Gauchía (jgauchia@jgauchia.com)
  * @brief  LVGL - Settings Screen
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
 #include "settingsScr.hpp"
 
 bool needReboot = false; /**< Flag to indicate if a system reboot is required */
 
-extern Compass compass;
+#ifdef ENABLE_COMPASS
+    extern Compass compass;
+#endif
 
 /**
  * @brief Back button event
@@ -23,7 +25,6 @@ static void back(lv_event_t *event)
 {
     if (isSearchingSat)
     {
-        lv_timer_pause(mainTimer);
         searchTimer = lv_timer_create(searchGPS, 100, NULL);
         lv_timer_ready(searchTimer);
         lv_screen_load(searchSatScreen);
@@ -95,6 +96,20 @@ static void deviceSettings(lv_event_t *event)
 }
 
 /**
+ * @brief Sensor Info
+ *
+ * @details Loads the sensor info screen.
+ *
+ * @param event LVGL event pointer.
+ */
+#if defined(BATT_PIN) || defined(BME280) || defined(ENABLE_IMU) || defined(ENABLE_COMPASS)
+static void sensorInfo(lv_event_t *event)
+{
+    lv_screen_load(sensorScreen);
+}
+#endif
+
+/**
  * @brief Create Settings screen
  *
  * @details Creates the settings screen 
@@ -147,6 +162,16 @@ void createSettingsScr()
     lv_label_set_text_static(btnLabel, "Device Settings");
     lv_obj_center(btnLabel);
     lv_obj_add_event_cb(btn, deviceSettings, LV_EVENT_CLICKED, NULL);
+    #if defined(BATT_PIN) || defined(BME280) || defined(ENABLE_IMU) || defined(ENABLE_COMPASS)
+    // Sensor Info
+    btn = lv_btn_create(settingsButtons);
+    lv_obj_set_size(btn, TFT_WIDTH - 30, 40 * scale);
+    btnLabel = lv_label_create(btn);
+    lv_obj_set_style_text_font(btnLabel, fontLarge, 0);
+    lv_label_set_text_static(btnLabel, "Sensor Info");
+    lv_obj_center(btnLabel);
+    lv_obj_add_event_cb(btn, sensorInfo, LV_EVENT_CLICKED, NULL);
+    #endif
     // Back button
     btn = lv_btn_create(settingsButtons);
     lv_obj_set_size(btn, TFT_WIDTH - 30, 40 * scale);

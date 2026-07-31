@@ -2,8 +2,8 @@
  * @file cli.cpp
  * @author @Hpsaturn
  * @brief  Network CLI and custom internal commands
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
 #ifndef DISABLE_CLI
@@ -61,7 +61,9 @@ void wcli_poweroff(char *args, Stream *response)
 void wcli_info(char *args, Stream *response)
 {
     setlocale(LC_NUMERIC, "");
-    size_t totalSPIFFS, usedSPIFFS, freeSPIFFS = 0;
+    size_t totalSPIFFS;
+    size_t usedSPIFFS;
+    size_t freeSPIFFS = 0;
     esp_spiffs_info(NULL, &totalSPIFFS, &usedSPIFFS);
     freeSPIFFS = totalSPIFFS - usedSPIFFS;
 
@@ -112,10 +114,8 @@ void wcli_info(char *args, Stream *response)
  * 
  * @details CLI command: wipe
  */
-void wcli_swipe(char *args, Stream *response)
+void wcli_wipe(char *args, Stream *response)
 {
-    Pair<String, String> operands = wcli.parseCommand(args);
-    String deviceId = operands.first();
     response->println("Clearing device to defaults..");
     wcli.clearSettings();
     cfg.clear();
@@ -251,14 +251,14 @@ void wcli_webfile(char *args, Stream *response)
         response->println(F("missing parameter use: webfile \033[1;32menable/disable\033[0;37m"));
     else
     {
-        if(commands.equals("enable"))
+        if (commands.equals("enable"))
         {
             cfg.saveBool(PKEYS::KWEB_FILE, true);
             response->println("");
             response->printf("Web file server \033[1;32menabled\033[0;37m\r\n");
             response->println("Please reboot device");
         }
-        if(commands.equals("disable"))
+        if (commands.equals("disable"))
         {
             cfg.saveBool(PKEYS::KWEB_FILE, false);
             response->println("");
@@ -274,7 +274,8 @@ void wcli_webfile(char *args, Stream *response)
 void initRemoteShell()
 {
     #ifndef DISABLE_CLI_TELNET 
-        if (wcli.isTelnetRunning()) wcli.shellTelnet->attachLogo(logo);
+        if (wcli.isTelnetRunning())
+            wcli.shellTelnet->attachLogo(logo);
     #endif
 }
 
@@ -288,7 +289,7 @@ void initShell()
     // Main Commands:
     wcli.add("reboot", &wcli_reboot, "\tperform a ESP32 reboot");
     wcli.add("poweroff", &wcli_poweroff, "\tperform a ESP32 deep sleep");
-    wcli.add("wipe", &wcli_swipe, "\t\twipe preferences to factory default");
+    wcli.add("wipe", &wcli_wipe, "\t\twipe preferences to factory default");
     wcli.add("info", &wcli_info, "\t\tget device information");
     wcli.add("clear", &wcli_clear, "\t\tclear shell");
     wcli.add("scshot", &wcli_scshot, "\tscreenshot to SD or sending a PC");

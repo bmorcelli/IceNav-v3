@@ -2,8 +2,8 @@
  * @file gpsMath.cpp
  * @author Jordi Gauchía (jgauchia@jgauchia.com)
  * @brief  Math and various functions
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
 #include "gpsMath.hpp"
@@ -12,6 +12,8 @@
 #include "esp_heap_caps.h"
 
 bool lutInit = false;
+float* sinLut = NULL;
+float* cosLut = NULL;
 
 /**
  * @brief Initialize lookup tables for sine and cosine
@@ -65,13 +67,6 @@ bool initTrigLUT()
  */
 float calcDist(float lat1, float lon1, float lat2, float lon2)
 {
-    // Simple Last Value Cache (LVC)
-    static float last_lat1 = 0, last_lon1 = 0, last_lat2 = 0, last_lon2 = 0;
-    static float last_dist = -1.0f;
-
-    if (lat1 == last_lat1 && lon1 == last_lon1 && lat2 == last_lat2 && lon2 == last_lon2)
-        return last_dist;
-
 	float lat1_rad = DEG2RAD(lat1);
 	float lon1_rad = DEG2RAD(lon1);
 	float lat2_rad = DEG2RAD(lat2);
@@ -79,7 +74,8 @@ float calcDist(float lat1, float lon1, float lat2, float lon2)
  	float dlat = lat2_rad - lat1_rad;
     float dlon = lon2_rad - lon1_rad;
 
-    float a, c;
+    float a;
+    float c;
 
     if (lutInit)
     {
@@ -95,12 +91,7 @@ float calcDist(float lat1, float lon1, float lat2, float lon2)
     }
 
     c = 2.0f * atan2f(sqrtf(a), sqrtf(1.0f - a));
-    last_dist = EARTH_RADIUS * c;
-    
-    // Update cache
-    last_lat1 = lat1; last_lon1 = lon1; last_lat2 = lat2; last_lon2 = lon2;
-
-    return last_dist;
+    return EARTH_RADIUS * c;
 }
 
 /**
@@ -142,8 +133,12 @@ float calcCourse(float lat1, float lon1, float lat2, float lon2)
     lat2 = DEG2RAD(lat2);
     float dLon = DEG2RAD(lon2 - lon1);
 
-    float sin_dLon, cos_dLon;
-    float sin_lat1, cos_lat1, sin_lat2, cos_lat2;
+    float sin_dLon;
+    float cos_dLon;
+    float sin_lat1;
+    float cos_lat1;
+    float sin_lat2;
+    float cos_lat2;
 
     if (lutInit)
     {
@@ -188,9 +183,34 @@ float calcCourse(float lat1, float lon1, float lat2, float lon2)
 float calcAngleDiff(float a, float b)
 {
     float diff = a - b;
-    while (diff > 180.0f) diff -= 360.0f;
-    while (diff < -180.0f) diff += 360.0f;
+    while (diff > 180.0f)
+        diff -= 360.0f;
+    while (diff < -180.0f)
+        diff += 360.0f;
     return diff;
+}
+
+/**
+ * @brief Formats a coordinate (latitude or longitude) into a degrees°minutes'seconds"H string.
+ *
+ * @details Shared implementation used by latFormatString() and lonFormatString().
+ *          Converts a decimal degree value to DMS notation with hemisphere indicator.
+ *
+ * @param value     Coordinate value in decimal degrees.
+ * @param posHemi   Hemisphere character for positive values (e.g. 'N' or 'E').
+ * @param negHemi   Hemisphere character for negative values (e.g. 'S' or 'W').
+ * @param buf       Output buffer to write the formatted string.
+ * @param bufSize   Size of the output buffer.
+ */
+static void formatCoordinate(float value, char posHemi, char negHemi, char *buf, size_t bufSize)
+{
+    char hemi = (value < 0.0f) ? negHemi : posHemi;
+    float absVal = fabsf(value);
+    uint16_t deg = static_cast<uint16_t>(absVal);
+    absVal = (absVal - deg) * 60.0f;
+    uint8_t min = static_cast<uint8_t>(absVal);
+    absVal = (absVal - min) * 60.0f;
+    snprintf(buf, bufSize, degreeFormat, deg, min, absVal, hemi);
 }
 
 /**
@@ -205,24 +225,8 @@ float calcAngleDiff(float a, float b)
  */
 char *latFormatString(float lat)
 {
-    char N_S = 'N';
-    float absLatitude = lat;
-    uint16_t deg;
-    uint8_t min;
     static char s_buf[64];
-
-    if (lat < 0.0f)
-    {
-        N_S = 'S';
-        absLatitude = fabsf(lat);
-    }
-
-    deg = static_cast<uint16_t>(absLatitude);
-    absLatitude = (absLatitude - deg) * 60.0f;
-    min = static_cast<uint8_t>(absLatitude);
-    absLatitude = (absLatitude - min) * 60.0f;
-
-    sprintf(s_buf, degreeFormat, deg, min, absLatitude, N_S);
+    formatCoordinate(lat, 'N', 'S', s_buf, sizeof(s_buf));
     return s_buf;
 }
 
@@ -238,23 +242,7 @@ char *latFormatString(float lat)
  */
 char *lonFormatString(float lon)
 {
-    char E_W = 'E';
-    float absLongitude = lon;
-    uint16_t deg;
-    uint8_t min;
     static char s_buf[64];
-
-    if (lon < 0.0f)
-    {
-        E_W = 'W';
-        absLongitude = fabsf(lon);
-    }
-
-    deg = static_cast<uint16_t>(absLongitude);
-    absLongitude = (absLongitude - deg) * 60.0f;
-    min = static_cast<uint8_t>(absLongitude);
-    absLongitude = (absLongitude - min) * 60.0f;
-
-    sprintf(s_buf, degreeFormat, deg, min, absLongitude, E_W);
+    formatCoordinate(lon, 'E', 'W', s_buf, sizeof(s_buf));
     return s_buf;
 }

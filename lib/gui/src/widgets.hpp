@@ -2,8 +2,8 @@
  * @file widgets.hpp
  * @author Jordi Gauchía (jgauchia@jgauchia.com)
  * @brief  LVGL - Widgets
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
 #pragma once
@@ -34,27 +34,29 @@ extern lv_obj_t *scaleLabel;       /**< Scale label */
 extern lv_obj_t *turnByTurn;       /**< Turn-by-Turn navigation widget*/
 extern lv_obj_t *turnDistLabel;    /**< Label object showing turn distance */
 extern lv_obj_t *turnImg;          /**< Image object for turn indication */
+extern lv_obj_t *climbOverlay;  /**< climb overlay widget */
+extern lv_obj_t *climbDistLabel;   /**< Remaining climb distance label */
+extern lv_obj_t *climbGainLabel;   /**< Remaining elevation gain label */
+extern lv_obj_t *climbGradeLabel;  /**< Current grade label */
+extern lv_obj_t *climbCanvas;          /**< Elevation profile canvas */
+extern lv_obj_t *climbSegLabel;        /**< "N/M" segment counter label */
+extern lv_obj_t *climbCatLabel;        /**< "CAT 2" / "HC" category label */
+extern lv_obj_t *climbTotalDistLabel;  /**< Total segment distance label */
+extern lv_obj_t *climbTotalGainLabel;  /**< Total segment elevation gain label */
+extern lv_obj_t *climbAvgGradeLabel;   /**< Average grade of segment label */
 
 void editWidget(lv_event_t *event);
 void dragWidget(lv_event_t *event);
 void unselectWidget(lv_event_t *event);
 
 static bool widgetSelected = false;      /**< Widget selection state */
-static bool canMoveWidget = false;       /**< Permission to move widget */
 static lv_coord_t newX = 0;              /**< New X coordinate for widget movement */
 static lv_coord_t newY = 0;              /**< New Y coordinate for widget movement */
 
 extern bool isScrolled;                  /**< Flag to indicate when tileview was scrolled */
 
-static const char *arrowIconFile      = "/arrow.bin";       /**< Compass arrow icon */
-static const char *positionIconFile   = "/pin.bin";         /**< Position icon */
-static const char *altitudeIconFile   = "/altit.bin";       /**< Altitude icon */
-static const char *speedIconFile      = "/speed.bin";       /**< Speed icon */
-static const char *sunriseIconFile    = "/sunrise.bin";     /**< Sunrise icon */
-static const char *sunsetIconFile     = "/sunset.bin";      /**< Sunset icon */
-static const char *navArrowIconFile   = "/navarrow.bin";    /**< Navigation arrow icon */
-static const char *zoomIconFile       = "/zoom.bin";        /**< Zoom map icon */
-static const char *mapSpeedIconFile   = "/mapspeed.bin";    /**< Speed map icon */
+static const char *toggle3DIconFile   = "/gfx/2dview.bin";      /**< 3D map mode toggle icon */
+static const char *toggle2DIconFile   = "/gfx/3dview.bin";      /**< 2D map mode toggle icon */
 
 
 void positionWidget(lv_obj_t *screen);
@@ -68,3 +70,4 @@ void mapSpeedWidget(lv_obj_t *screen);
 void mapCompassWidget(lv_obj_t *screen);
 void mapScaleWidget(lv_obj_t *screen);
 void turnByTurnWidget(lv_obj_t *screen);
+void climbWidget(lv_obj_t *screen);

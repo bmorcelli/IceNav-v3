@@ -2,14 +2,14 @@
  * @file lvglFuncs.cpp
  * @author Jordi Gauchía (jgauchia@jgauchia.com)
  * @brief  LVGL custom functions
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
 #include "lvglFuncs.hpp"
 #include "esp_system.h"
 
-lv_obj_t *msgDialog;     /**< Message dialog object. */
+lv_obj_t *msgDialog = nullptr;     /**< Message dialog object. */
 
 /**
  * @brief Custom LVGL function to hide the object's cursor.
@@ -124,5 +124,11 @@ void showMsg(const char* symbol, const char* message)
  */
 void closeMsg()
 {
+    if (msgDialog == nullptr || !lv_obj_is_valid(msgDialog))
+    {
+        msgDialog = nullptr;
+        return;
+    }
     lv_obj_del(msgDialog);
+    msgDialog = nullptr;
 }

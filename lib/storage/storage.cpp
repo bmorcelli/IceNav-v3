@@ -2,29 +2,23 @@
  * @file storage.cpp
  * @author Jordi Gauchía (jgauchia@jgauchia.com)
  * @brief  Storage definition and functions
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
 #include "storage.hpp"
+#include "../../include/hal.hpp"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "driver/sdspi_host.h"
 #include <cmath>
-#include <sstream>
-#include <iomanip>
+#include <cstdio>
 
 #define SD_OCR_SDHC_CAP (1 << 30) /**< SD card SDHC capacity flag */
 
-extern const uint8_t SD_CS;   /**< Chip Select pin for SD card */
-extern const uint8_t SD_MISO; /**< MISO pin for SD card */
-extern const uint8_t SD_MOSI; /**< MOSI pin for SD card */
-extern const uint8_t SD_CLK;  /**< Clock pin for SD card */
-
 static const char *TAG = "Storage";
 
-// Global Storage instance
 Storage storage;
 
 /**
@@ -48,9 +42,9 @@ namespace
 			order++;
 			formatted_size /= 1024;
 		}
-		std::ostringstream oss;
-		oss << std::fixed << std::setprecision(2) << formatted_size << " " << suffixes[order];
-		return oss.str();
+		char buf[16];
+		snprintf(buf, sizeof(buf), "%.2f %s", formatted_size, suffixes[order]);
+		return std::string(buf);
 	}
 }
 
@@ -74,9 +68,19 @@ esp_err_t Storage::initSD()
 {
 	if (!dmaBuffer)
 		dmaBuffer = (uint8_t *)heap_caps_aligned_alloc(64, DMA_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-	
+	if (!dmaBuffer)
+	{
+		ESP_LOGE(TAG, "Failed to allocate DMA buffer");
+		return ESP_ERR_NO_MEM;
+	}
+
 	if (!readMutex)
 		readMutex = xSemaphoreCreateMutex();
+	if (!readMutex)
+	{
+		ESP_LOGE(TAG, "Failed to create read mutex");
+		return ESP_ERR_NO_MEM;
+	}
 
 	#ifndef SPI_SHARED
 		esp_err_t ret;
@@ -123,7 +127,7 @@ esp_err_t Storage::initSD()
 				ESP_LOGE(TAG, "Failed to mount filesystem.");
 			else
 				ESP_LOGE(TAG, "Failed to initialize the card (%s).", esp_err_to_name(ret));
-			
+			spi_bus_free((spi_host_device_t)host.slot);
 			return ret;
 		}
 		else
@@ -531,6 +535,37 @@ int Storage::seek(FILE *file, long offset, int whence)
 	int res = fseek(file, offset, whence);
 	xSemaphoreGive(readMutex);
 	return res;
+}
+
+size_t Storage::seekAndRead(FILE *file, long offset, uint8_t *buffer, size_t size)
+{
+    if (!file || !buffer)
+        return 0;
+    size_t totalRead = 0;
+    if (xSemaphoreTake(readMutex, pdMS_TO_TICKS(1000)) != pdTRUE)
+        return 0;
+    fseek(file, offset, SEEK_SET);
+    if (esp_ptr_internal(buffer))
+    {
+        totalRead = fread(buffer, 1, size, file);
+    }
+    else
+    {
+        if (dmaBuffer)
+        {
+            while (totalRead < size)
+            {
+                size_t toRead = (size - totalRead > DMA_BUF_SIZE) ? DMA_BUF_SIZE : (size - totalRead);
+                size_t r = fread(dmaBuffer, 1, toRead, file);
+                if (r == 0)
+                    break;
+                memcpy(buffer + totalRead, dmaBuffer, r);
+                totalRead += r;
+            }
+        }
+    }
+    xSemaphoreGive(readMutex);
+    return totalRead;
 }
 
 /**

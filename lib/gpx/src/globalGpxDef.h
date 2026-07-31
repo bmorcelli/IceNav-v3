@@ -2,8 +2,8 @@
  * @file globalGpxDef.h
  * @author Jordi Gauchía (jgauchia@jgauchia.com)
  * @brief  Global GPX Variables
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
 #pragma once
@@ -72,7 +72,8 @@ enum gpxAction_t
     GPX_DEL,    /**< Delete a waypoint. */
 };
 
-extern uint8_t gpxAction; /**< Indicates the current GPX waypoint action to be performed. */
+extern uint8_t gpxAction;                          /**< Indicates the current GPX waypoint action to be performed. */
+extern std::vector<TrackSegment> trackIndex;       /**< Spatial index of track segments for O(log n) search. */
 
 /**
  * @brief Track turn points structure

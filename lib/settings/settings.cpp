@@ -2,8 +2,8 @@
  * @file settings.cpp
  * @author Jordi Gauchía (jgauchia@jgauchia.com)
  * @brief  Settings functions
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
 #include "settings.hpp"
@@ -50,10 +50,13 @@ bool     enableWeb      = true; /**< Enable or disable web file server */
 bool     showMapToolBar = false;/**< Show Map Toolbar */
 int8_t   tempOffset     = 0;    /**< BME Temperature offset */
 bool     calculateDST   = false;/**< Daylight Saving Time calculation flag */
+bool     nmeaDebugTileEnabled = false; /**< Show the NMEA debug tile */
 
 
 extern Battery battery;
-extern Compass compass;
+#ifdef ENABLE_COMPASS
+    extern Compass compass;
+#endif
 extern Gps gps;
 
 /**
@@ -78,7 +81,10 @@ void loadPreferences()
     mapSet.showMapSpeed = cfg.getBool(PKEYS::KMAP_SPEED, true);
     mapSet.vectorMap = cfg.getBool(PKEYS::KMAP_VECTOR, false);
     mapSet.showMapScale = cfg.getBool(PKEYS::KMAP_SCALE, true);
+    mapSet.showClimb = cfg.getBool(PKEYS::KMAP_CLIMB, false);
+    mapSet.map3D = cfg.getBool(PKEYS::KMAP_3D, false);
     navSet.simNavigation = cfg.getBool(PKEYS::KSIM_NAV, false);
+    navSet.routeSpeed = cfg.getShort(PKEYS::KROUTE_SPEED, 130);
     gpsBaud = cfg.getShort(PKEYS::KGPS_SPEED, 4);
     gpsUpdate = cfg.getShort(PKEYS::KGPS_RATE, 3);
     compassPosX = cfg.getInt(PKEYS::KCOMP_X, (TFT_WIDTH / 2) - (100 * scale));
@@ -100,6 +106,7 @@ void loadPreferences()
     GPS_RX = cfg.getUInt(PKEYS::KGPS_RX, GPS_RX);
     enableWeb = cfg.getBool(PKEYS::KWEB_FILE, enableWeb);
     tempOffset = cfg.getInt(PKEYS::KTEMP_OFFS, 0);
+    nmeaDebugTileEnabled = cfg.getBool(PKEYS::KNMEA_DEBUG, false);
 
     // Default Widgets positions
     #ifdef TDECK_ESP32S3
@@ -111,8 +118,8 @@ void loadPreferences()
         altitudePosY = cfg.isKey(CONFKEYS::KALTITUDE_Y) ? cfg.getInt(CONFKEYS::KALTITUDE_Y, altitudePosY) : 57;
         speedPosX = cfg.isKey(CONFKEYS::KSPEED_X) ? cfg.getInt(CONFKEYS::KSPEED_X, speedPosX) : 3;
         speedPosY = cfg.isKey(CONFKEYS::KSPEED_Y) ? cfg.getInt(CONFKEYS::KSPEED_Y, speedPosY) : 94;
-        sunPosX = cfg.isKey(CONFKEYS::KSUN_X) ? cfg.getInt(CONFKEYS::KSPEED_X, speedPosX) : 3;
-        sunPosY = cfg.isKey(CONFKEYS::KSUN_Y) ? cfg.getInt(CONFKEYS::KSPEED_Y, speedPosY) : 110;
+        sunPosX = cfg.isKey(CONFKEYS::KSUN_X) ? cfg.getInt(CONFKEYS::KSUN_X, sunPosX) : 3;
+        sunPosY = cfg.isKey(CONFKEYS::KSUN_Y) ? cfg.getInt(CONFKEYS::KSUN_Y, sunPosY) : 110;
     #endif
 
     battery.setBatteryLevels(cfg.getFloat(PKEYS::KVMAX_BATT, 4.2f), cfg.getFloat(PKEYS::KVMIN_BATT, 3.6f));
@@ -139,16 +146,17 @@ void saveGPSBaud(uint16_t gpsBaud)
             gpsPort.flush();
             gpsPort.println(GPS_BAUD_PCAS[gpsBaud]);
             gpsPort.flush();
+            vTaskDelay(pdMS_TO_TICKS(200));
             gpsPort.println("$PCAS00*01\r\n");
             gpsPort.flush();
-            vTaskDelay(pdMS_TO_TICKS(500));
+            vTaskDelay(pdMS_TO_TICKS(1000));
         #endif
         gpsPort.flush();
         gpsPort.end();
-        vTaskDelay(pdMS_TO_TICKS(500));
-        gpsPort.setRxBufferSize(1024);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        gpsPort.setRxBufferSize(2048);
         gpsPort.begin(GPS_BAUD[gpsBaud], SERIAL_8N1, GPS_RX, GPS_TX);
-        vTaskDelay(pdMS_TO_TICKS(500));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
     else
     {
@@ -159,7 +167,7 @@ void saveGPSBaud(uint16_t gpsBaud)
             gpsPort.flush();
             gpsPort.end();
             vTaskDelay(pdMS_TO_TICKS(500));
-            gpsPort.setRxBufferSize(1024);
+            gpsPort.setRxBufferSize(2048);
             gpsPort.begin(gpsBaudDetected, SERIAL_8N1, GPS_RX, GPS_TX);
             vTaskDelay(pdMS_TO_TICKS(500));
         }
@@ -181,9 +189,18 @@ void saveGPSUpdateRate(uint16_t gpsUpdateRate)
         gpsPort.flush();
         gpsPort.println(GPS_RATE_PCAS[gpsUpdateRate]);
         gpsPort.flush();
+        vTaskDelay(pdMS_TO_TICKS(100));
+        // Re-decimate GSA/GSV for the new rate so the 9600 link stays within budget
+        char pcas03[40];
+        buildPcas03(pcas03, sizeof(pcas03), gpsUpdateRate);
+        gpsPort.println(pcas03);
+        gpsPort.flush();
+        vTaskDelay(pdMS_TO_TICKS(100));
         gpsPort.println("$PCAS00*01\r\n");
         gpsPort.flush();
         vTaskDelay(pdMS_TO_TICKS(500));
+        while (gpsPort.available())
+            gpsPort.read();
     #endif
 }
 
@@ -200,12 +217,10 @@ void saveWidgetPos(char *widget, uint16_t posX, uint16_t posY)
 {
     const char *strX = "X";
     const char *strY = "Y";
-    char widgetX[30] = "";
-    char widgetY[30] = "";
-    strcat(widgetX, widget);
-    strcat(widgetX, strX);
-    strcat(widgetY, widget);
-    strcat(widgetY, strY);
+    char widgetX[30];
+    char widgetY[30];
+    snprintf(widgetX, sizeof(widgetX), "%sX", widget);
+    snprintf(widgetY, sizeof(widgetY), "%sY", widget);
 
     cfg.saveInt(widgetX, posX);
     cfg.saveInt(widgetY, posY);

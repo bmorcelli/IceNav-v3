@@ -2,11 +2,12 @@
  * @file splashScr.hpp
  * @author Jordi Gauchía (jgauchia@jgauchia.com)
  * @brief  Splash screen - NOT LVGL
- * @version 0.2.5
- * @date 2026-04
+ * @version 0.2.9
+ * @date 2026-06
  */
 
 #include "splashScr.hpp"
+#include "lv_subjects.hpp"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_system.h"
@@ -104,14 +105,14 @@ void splashScreen()
         splashSprite.deleteSprite();
 
         lv_screen_load_anim(splashScr, LV_SCR_LOAD_ANIM_FADE_OUT, 2500, 0, false);	
-        for( int i=0; i < 1000; i++ )
+        for (int i = 0; i < 1000; i++)
         {
             lv_task_handler();  
             vTaskDelay(5);
         }     
 
         lv_obj_fade_out(splashScr, 2500,0);
-        for( int i=0; i < 300; i++ )
+        for (int i = 0; i < 300; i++)
         {
             lv_task_handler();  
             vTaskDelay(5);
@@ -121,7 +122,11 @@ void splashScreen()
         mapView.currentMapTile = mapView.getMapTile(gps.gpsData.longitude, gps.gpsData.latitude, zoom, 0, 0);
         mapView.generateMap(zoom);
 
-        lv_obj_delete(splashScr);
+        if (lvgl_mutex != NULL && xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
+        {
+            lv_obj_delete(splashScr);
+            xSemaphoreGive(lvgl_mutex);
+        }
     #else
         tftOff();
         
