@@ -22,11 +22,11 @@
             #- { env: "ESP32S3_N16R8"   , addr: 0x0000 }
 
       steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@v5
 
           - id: build
             name: setup Python
-            uses: actions/setup-python@v2
+            uses: actions/setup-python@v6
             with:
               python-version: "3.13"
 
@@ -44,7 +44,7 @@
               0x10000 .pio/build/${{ matrix.board.env }}/firmware.bin
 
           - name: Upload Artifacts
-            uses: actions/upload-artifact@v4
+            uses: actions/upload-artifact@v6
             with:
               name: Artifacts-${{ matrix.board.env }}
               path: |
@@ -65,12 +65,12 @@
           version=${{ github.ref_name }}
           echo "version=${version}" > $GITHUB_OUTPUT
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           merge-multiple: true
 
       - name: Create Release ${{ steps.tag_version.outputs.version }}
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           name: IceNav Release ${{ steps.tag_version.outputs.version }}
           tag_name: ${{ steps.tag_version.outputs.version }}
